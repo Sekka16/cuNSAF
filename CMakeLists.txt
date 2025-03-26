@@ -15,6 +15,7 @@ include_directories(
 
 # 源文件配置
 file(GLOB_RECURSE SOURCES "src/kernels/add/add.cu")
+file(GLOB_RECURSE SOURCES "src/kernels/reduce/reduce_baseline.cu")
 
 # 可执行文件配置
 add_executable(main 

@@ -40,8 +40,7 @@ void add_wrapper(const float *a, const float *b, float *c, int n) {
 }
 
 // 新增测试入口函数
-void test_add()
-{
+void test_add() {
   const int N = 100;
   float *a = new float[N];
   float *b = new float[N];
@@ -60,10 +59,8 @@ void test_add()
 
   // 验证结果
   bool success = true;
-  for (int i = 0; i < N; ++i)
-  {
-    if (c[i] != a[i] + b[i])
-    {
+  for (int i = 0; i < N; ++i) {
+    if (c[i] != a[i] + b[i]) {
       std::cerr << "Error at index " << i << ": " << c[i] << " vs "
                 << a[i] + b[i] << std::endl;
       success = false;
