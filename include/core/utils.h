@@ -6,36 +6,18 @@
 #include <type_traits> // 用于类型检查
 
 template <typename T>
-void initialize_array(T *arr, size_t size, T min = T(0), T max = T(1))
-{
-  // 随机数生成器
-  std::random_device rd;
-  std::mt19937 gen(rd());
-
-  // 根据类型选择分布
-  if constexpr (std::is_integral_v<T>)
-  {
-    std::uniform_int_distribution<T> dis(min, max);
-    for (size_t i = 0; i < size; ++i)
-    {
-      arr[i] = dis(gen);
+void initialize_array_random(T* array, int n, T lower_bound = 0, T upper_bound = 1) {
+    std::random_device rd;  // 真随机数种子（若系统支持）
+    std::mt19937 gen(rd()); // Mersenne Twister 伪随机数生成器
+    std::uniform_real_distribution<float> dis(lower_bound, upper_bound);
+    for (int i = 0; i < n; ++i) {
+        array[i] = dis(gen);
     }
-  }
-  else
-  {
-    std::uniform_real_distribution<T> dis(min, max);
-    for (size_t i = 0; i < size; ++i)
-    {
-      arr[i] = dis(gen);
-    }
-  }
 }
 
 template <typename T>
-void print_array(const T *arr, size_t size)
-{
-  for (size_t i = 0; i < size; ++i)
-  {
+void print_array(const T *arr, size_t size) {
+  for (size_t i = 0; i < size; ++i) {
     std::cout << arr[i] << " ";
   }
   std::cout << std::endl;
