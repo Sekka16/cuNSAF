@@ -18,12 +18,12 @@ file(GLOB_RECURSE SOURCES "src/kernels/add/add.cu")
 file(GLOB_RECURSE SOURCES "src/kernels/reduce/reduce_baseline.cu")
 
 # 可执行文件配置
-add_executable(main 
+add_executable(test 
     src/main.cpp 
     ${SOURCES}
 )
 
 # 链接库配置
-target_link_libraries(main PRIVATE 
+target_link_libraries(test PRIVATE 
     CUDA::cudart  # CUDA运行时库
 )
