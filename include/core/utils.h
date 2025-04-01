@@ -30,4 +30,16 @@ float gpu_timer_ms(cudaEvent_t start, cudaEvent_t stop) {
     return milliseconds;
 }
 
+std::string center(const std::string& text, int width) {
+    int left = (width - text.length()) / 2;
+    return std::string(left, ' ') + text + std::string(width - left - text.length(), ' ');
+}
+
+void print_section_header(const std::string& title, int delimiter_length = 80) {
+    const std::string delimiter(delimiter_length, '=');
+    std::cout << delimiter << std::endl;
+    std::cout << title << std::endl;
+    std::cout << delimiter << std::endl;
+}
+
 #endif

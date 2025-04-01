@@ -1,7 +1,8 @@
 #ifndef KERNELS_ADD_H
 #define KERNELS_ADD_H
 
-void add_wrapper(const float *a, const float *b, float *c, int n);
+typedef void (*ReduceKernel)(const float *, float *, int);
 
-void test_add();
+__global__ void reduce_baseline(const float *input, float *output, int n);
+__global__ void reduce_without_warp_divergence(const float *input, float *output, int n);
 #endif

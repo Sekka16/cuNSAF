@@ -1,6 +1,4 @@
 #!/bin/bash
-rm -rf build
-
 BUILD_DIR="build"
 
 # 显式指定CUDA路径（如果自动检测失败）
