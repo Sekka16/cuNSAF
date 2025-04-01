@@ -2,32 +2,14 @@
 
 ## baseline
 
-将数据从global memory读入shared memory，然后相邻元素两两相加。
+将数据从global memory读入shared memory，然后相邻元素两两相加，进行规约。、
 
-```cpp
-template<const int THREAD_PER_BLOCK = 256>
-__global__ void reduce_baseline_kernel(const float *input, float *output, int n) {
-    __shared__ float sdata[THREAD_PER_BLOCK];
+这样做存在的问题就是产生了warp divergence。对于一个block，所有的thread都是执行同一条命令。
 
-    int tid = threadIdx.x;
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+如果存在if-else的分支情况，thread会执行所有的分支，只是产生的结果不会记录下来。
 
-    // 将数据加载到共享内存，并检查数组边界
-    sdata[tid] = (idx < n) ? input[idx] : 0.0f;
-    __syncthreads();
+## without warp divergence
 
-    // 归约操作：每轮步长翻倍
-    for (int s = 1; s < blockDim.x; s *= 2) {
-        if (tid % (2 * s) == 0 && (tid + s) < blockDim.x) {
-            sdata[tid] += sdata[tid + s];
-        }
-        __syncthreads();
-    }
+解决方法即尽可能地让所有线程走到同一个分支中。
 
-    // 每个 Block 的归约结果保存在 Block 内第一个线程处
-    if (tid == 0) {
-        output[blockIdx.x] = sdata[0];
-    }
-}
-```
 

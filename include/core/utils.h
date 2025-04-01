@@ -23,4 +23,11 @@ void print_array(const T *arr, size_t size) {
   std::cout << std::endl;
 }
 
+// 计时工具
+float gpu_timer_ms(cudaEvent_t start, cudaEvent_t stop) {
+    float milliseconds = 0;
+    cudaEventElapsedTime(&milliseconds, start, stop);
+    return milliseconds;
+}
+
 #endif
