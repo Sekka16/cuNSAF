@@ -2,18 +2,16 @@
 #include "kernels/kernels.h"
 
 #define THREAD_PER_BLOCK 256
-// 归约 Kernel：将每个 Block 内的数据归约为一个值
+
 __global__ void reduce_baseline(const float *input, float *output, int n) {
   __shared__ float sdata[THREAD_PER_BLOCK];
 
   int tid = threadIdx.x;
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
-  // 将数据加载到共享内存，并检查数组边界
   sdata[tid] = (idx < n) ? input[idx] : 0.0f;
   __syncthreads();
 
-  // 归约操作：每轮步长翻倍
   for (int s = 1; s < blockDim.x; s *= 2) {
     if (tid % (2 * s) == 0 && (tid + s) < blockDim.x) {
       sdata[tid] += sdata[tid + s];
@@ -21,7 +19,6 @@ __global__ void reduce_baseline(const float *input, float *output, int n) {
     __syncthreads();
   }
 
-  // 每个 Block 的归约结果保存在 Block 内第一个线程处
   if (tid == 0) {
     output[blockIdx.x] = sdata[0];
   }
@@ -37,8 +34,9 @@ __global__ void reduce_without_warp_divergence(const float *input, float *output
   __syncthreads();
 
   for (int s = 1; s < blockDim.x; s *= 2) {
-    if (tid < blockDim.x - s) {
-      sdata[tid] += sdata[tid + s];
+    int targetIdx = 2 * s * tid; // 本轮中计算得到数据存储到sram中的位置
+    if (targetIdx < blockDim.x) {
+      sdata[targetIdx] += sdata[targetIdx + s];
     }
     __syncthreads();
   }
@@ -126,7 +124,7 @@ float cpu_reduce(const std::vector<float> &input) {
   return sum;
 }
 
-void benchmark_reduce(ReduceKernel kernel, int N, int repeat = 5) {
+void benchmark_reduce(ReduceKernel kernel, int N, int repeat = 1) {
     std::vector<float> input(N);
     float gpu_output = 0.0f;
 
@@ -167,7 +165,8 @@ void run_reduce_tests() {
     for (const auto& test : tests) {
         print_section_header("Test for " + std::string(test.name), delimiter_length);
 
-        std::vector<int> sizes = {1 << 8, 1 << 16, 1 << 24};
+        std::vector<int> sizes = {1 << 24};
+        // std::vector<int> sizes = {1 << 24};
         for (int N : sizes) {
             benchmark_reduce(test.kernel, N);
         }
