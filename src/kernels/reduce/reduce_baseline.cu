@@ -33,16 +33,36 @@ __global__ void reduce_without_warp_divergence(const float *input, float *output
   sdata[tid] = (idx < n) ? input[idx] : 0.0f;
   __syncthreads();
 
-  for (int s = 1; s < blockDim.x; s *= 2) {
-    int targetIdx = 2 * s * tid; // 本轮中计算得到数据存储到sram中的位置
+  for (int stride = 1; stride < blockDim.x; stride *= 2) {
+    int targetIdx = 2 * stride * tid; // 本轮中计算得到数据存储到sram中的位置
     if (targetIdx < blockDim.x) {
-      sdata[targetIdx] += sdata[targetIdx + s];
+      sdata[targetIdx] += sdata[targetIdx + stride];
     }
     __syncthreads();
   }
   if (tid == 0) {
     output[blockIdx.x] = sdata[0];
   }
+}
+
+__global__ void reduce_without_bank_conflict(const float *input, float *output, int n) {
+    __shared__ float sdata[THREAD_PER_BLOCK];
+
+    int tid = threadIdx.x;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    sdata[tid] = (idx < n) ? input[idx] : 0.0f;
+    __syncthreads();
+
+    for (int stride = blockDim.x / 2; stride != 0; stride >>= 1) {
+        if (tid < stride) {
+            sdata[tid] += sdata[tid + stride];
+        }
+        __syncthreads();
+    }
+    if (tid == 0) {
+        output[blockIdx.x] = sdata[0];
+    }
 }
 
 void reduce(ReduceKernel kernel, const float *input, float *output, int n) {
@@ -95,82 +115,119 @@ void reduce(ReduceKernel kernel, const float *input, float *output, int n) {
     cudaFree(d_next);
 }
 
-// 精度测试
+// ----------- 精度测试相关 -------------
+float cpu_reduce(const std::vector<float> &input) {
+    float sum = 0.0f, compensation = 0.0f;
+    for (float v : input) {
+        float y = v - compensation;
+        float t = sum + y;
+        compensation = (t - sum) - y;
+        sum = t;
+    }
+    return sum;
+}
+
 bool verify_result(const std::vector<float> &input, float gpu_result,
                    float tolerance = 1e-5f) {
-  float cpu_result = cpu_reduce(input);
-  float abs_error = std::fabs(cpu_result - gpu_result);
-  float rel_error =
-      (cpu_result != 0) ? abs_error / std::fabs(cpu_result) : 0.0f;
+    float cpu_result = cpu_reduce(input);
+    float abs_error = std::fabs(cpu_result - gpu_result);
+    float rel_error = (cpu_result != 0) ? abs_error / std::fabs(cpu_result) : 0.0f;
 
-  std::cout << std::scientific << std::setprecision(6);
-  std::cout << "[Validation] CPU: " << cpu_result << ", GPU: " << gpu_result
-            << ", Abs Error: " << abs_error << ", Rel Error: " << rel_error
-            << std::endl;
+    std::cout << std::scientific << std::setprecision(6);
+    std::cout << "[Validation] CPU: " << cpu_result << ", GPU: " << gpu_result
+              << ", Abs Error: " << abs_error << ", Rel Error: " << rel_error << std::endl;
 
-  return abs_error < tolerance;
+    return abs_error < tolerance;
 }
 
-// Kahan求和算法
-float cpu_reduce(const std::vector<float> &input) {
-  float sum = 0.0f;
-  float compensation = 0.0f; // 补偿值
-  for (float v : input) {
-    float y = v - compensation;
-    float t = sum + y;
-    compensation = (t - sum) - y;
-    sum = t;
-  }
-  return sum;
-}
-
-void benchmark_reduce(ReduceKernel kernel, int N, int repeat = 1) {
+void test_accuracy_only(ReduceKernel kernel, int N) {
     std::vector<float> input(N);
     float gpu_output = 0.0f;
-
     initialize_array_random(input.data(), N, 0.0f, 1.0f);
+
+    reduce(kernel, input.data(), &gpu_output, N);
+    bool passed = verify_result(input, gpu_output);
+
+    if (!passed) {
+        std::cerr << "[FAIL] Accuracy test failed for N = " << N << std::endl;
+    } else {
+        std::cout << "[PASS] Accuracy test passed for N = " << N << std::endl;
+    }
+}
+
+// ----------- 性能测试相关 -------------
+void benchmark_only(ReduceKernel kernel, int N, int repeat = 1) {
+    const int blockSize = 256;
+    const int gridSize = (N + blockSize - 1) / blockSize;
+
+    std::vector<float> input(N);
+    initialize_array_random(input.data(), N, 0.0f, 1.0f);
+
+    float *d_input = nullptr;
+    float *d_output = nullptr;
+    cudaMalloc(&d_input, N * sizeof(float));
+    cudaMalloc(&d_output, gridSize * sizeof(float));
+    cudaMemcpy(d_input, input.data(), N * sizeof(float), cudaMemcpyHostToDevice);
 
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
 
-    // 运行多次，取平均值
     float total_time = 0;
-    for (int i = 0; i < repeat; i++) {
+    for (int i = 0; i < repeat; ++i) {
+        cudaMemset(d_output, 0, gridSize * sizeof(float));
         cudaEventRecord(start);
-        reduce(kernel, input.data(), &gpu_output, N);  // 调用 reduce 函数
+        kernel<<<gridSize, blockSize>>>(d_input, d_output, N);
         cudaEventRecord(stop);
         cudaEventSynchronize(stop);
         total_time += gpu_timer_ms(start, stop);
     }
 
-    // 输出性能结果
     std::cout << "[Performance] N = " << N
-              << ", Avg Time = " << (total_time / repeat) << " ms" << std::endl;
-
-    verify_result(input, gpu_output);
+              << ", Avg Time = " << (total_time / repeat) << " ms"
+              << std::endl;
 
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
+    cudaFree(d_input);
+    cudaFree(d_output);
 }
 
-void run_reduce_tests() {
+// ----------- 测试入口 -------------
+void reduce_accuracy_tests() {
     const int delimiter_length = 100;
 
     TestConfig tests[] = {
         {reduce_baseline, "REDUCE baseline"},
-        {reduce_without_warp_divergence, "REDUCE without warp divergence"}
+        {reduce_without_warp_divergence, "REDUCE without warp divergence"},
+        {reduce_without_bank_conflict, "REDUCE without bank conflict"}
     };
 
     for (const auto& test : tests) {
-        print_section_header("Test for " + std::string(test.name), delimiter_length);
-
-        std::vector<int> sizes = {1 << 24};
-        // std::vector<int> sizes = {1 << 24};
+        print_section_header("Accuracy Test: " + std::string(test.name), delimiter_length);
+        std::vector<int> sizes = {1 << 23};
         for (int N : sizes) {
-            benchmark_reduce(test.kernel, N);
+            test_accuracy_only(test.kernel, N);
         }
+        std::cout << std::string(delimiter_length, '=') << std::endl;
+    }
+}
 
+void reduce_benchmark_tests() {
+    const int delimiter_length = 100;
+
+    TestConfig tests[] = {
+        {reduce_baseline, "REDUCE baseline"},
+        {reduce_without_warp_divergence, "REDUCE without warp divergence"},
+        {reduce_without_bank_conflict, "REDUCE without bank conflict"}
+    };
+
+    for (const auto& test : tests) {
+        print_section_header("Benchmark: " + std::string(test.name), delimiter_length);
+        std::vector<int> sizes = {1 << 23};
+        for (int N : sizes) {
+            benchmark_only(test.kernel, N);
+        }
         std::cout << std::string(delimiter_length, '=') << std::endl;
     }
 }
