@@ -2,5 +2,5 @@ build/
 .vscode/
 report/
 report.ncu-rep
-ncu.sh
+./ncu.sh
 

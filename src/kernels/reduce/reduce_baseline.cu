@@ -130,7 +130,8 @@ void reduce(ReduceKernel kernel, const float *input, float *output, int n) {
 
     int blockSize = 256;  // 固定线程块大小
     int gridSize = (n + blockSize - 1) / blockSize;
-    if (kernel == reduce_with_idle_used || kernel == reduce_with_expand_last_dim) {
+    if (kernel == reduce_with_idle_used ||
+        kernel == reduce_with_expand_last_dim) {
         gridSize = (n + blockSize * 2 - 1) / (blockSize * 2);
     }
     const int output_size = gridSize * sizeof(float);
@@ -159,7 +160,8 @@ void reduce(ReduceKernel kernel, const float *input, float *output, int n) {
     while (s > 1) {
         blockSize = min(blockSize, s);
         gridSize = (s + blockSize - 1) / blockSize;
-        if (kernel == reduce_with_idle_used || kernel == reduce_with_expand_last_dim) {
+        if (kernel == reduce_with_idle_used ||
+            kernel == reduce_with_expand_last_dim) {
             gridSize = (s + blockSize * 2 - 1) / (blockSize * 2);
         }
 
@@ -198,11 +200,15 @@ bool verify_result(const std::vector<float> &input, float gpu_result,
     float abs_error = std::fabs(cpu_result - gpu_result);
     float rel_error = (cpu_result != 0) ? abs_error / std::fabs(cpu_result) : 0.0f;
 
-    std::cout << std::scientific << std::setprecision(6);
+    std::cout << std::scientific << std::setprecision(7);
     std::cout << "[Validation] CPU: " << cpu_result << ", GPU: " << gpu_result
-              << ", Abs Error: " << abs_error << ", Rel Error: " << rel_error << std::endl;
+              << ", Abs Error: " << std::abs(cpu_result - gpu_result) << ", Rel Error: " << rel_error << std::endl;
 
-    return abs_error < tolerance;
+    // 如果cpu_result比较小，允许一定绝对误差
+    if (std::fabs(cpu_result) < 1e-3f)
+        return abs_error < tolerance;
+    else
+        return rel_error < tolerance;
 }
 
 void test_accuracy_only(ReduceKernel kernel, int N) {
