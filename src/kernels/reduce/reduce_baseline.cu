@@ -65,12 +65,74 @@ __global__ void reduce_without_bank_conflict(const float *input, float *output, 
     }
 }
 
+// 显著变化是原本每个block中的256个线程，后128个不工作，现在有加载两个数据并且做加法的工作
+// 并且由于每个block的空闲线程得到了利用，gridSize也大大减小
+__global__ void reduce_with_idle_used(const float *input, float *output, int n) {
+    __shared__ float sdata[THREAD_PER_BLOCK];
+
+    int tid = threadIdx.x;
+    int idx = blockIdx.x * (blockDim.x * 2) + threadIdx.x;
+
+    float x = (idx < n) ? input[idx] : 0.0f;
+    float y = (idx + blockDim.x < n) ? input[idx + blockDim.x] : 0.0f;
+    sdata[tid] = x + y;
+    __syncthreads();
+
+    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+        if (tid < stride) {
+	        sdata[tid] += sdata[tid + stride];
+	    }
+	    __syncthreads();
+    }
+
+    if (tid == 0) {
+       output[blockIdx.x] = sdata[0];
+    }
+}
+
+__device__ void warpReduce(volatile float* cache, int tid) {
+    cache[tid] += cache[tid + 32];
+    cache[tid] += cache[tid + 16];
+    cache[tid] += cache[tid + 8];
+    cache[tid] += cache[tid + 4];
+    cache[tid] += cache[tid + 2];
+    cache[tid] += cache[tid + 1];
+}
+
+__global__ void reduce_with_expand_last_dim(const float *input, float *output, int n) {
+    __shared__ float sdata[THREAD_PER_BLOCK];
+
+    int tid = threadIdx.x;
+    int idx = blockIdx.x * (blockDim.x * 2) + threadIdx.x;
+
+    float x = (idx < n) ? input[idx] : 0.0f;
+    float y = (idx + blockDim.x < n) ? input[idx + blockDim.x] : 0.0f;
+    sdata[tid] = x + y;
+    __syncthreads();
+
+    for (int stride = blockDim.x / 2; stride > 32; stride >>= 1) {
+        if (tid < stride) {
+            sdata[tid] += sdata[tid + stride];
+        }
+        __syncthreads();
+    }
+    if (tid < 32) {
+        warpReduce(sdata, tid);
+    }
+    if (tid == 0) {
+        output[blockIdx.x] = sdata[tid];
+    }
+}
+
 void reduce(ReduceKernel kernel, const float *input, float *output, int n) {
     // Step 1: 分配设备内存并拷贝输入数据
     float *d_input = nullptr, *d_current = nullptr, *d_next = nullptr;
 
-    const int blockSize = 256;  // 固定线程块大小
-    const int gridSize = (n + blockSize - 1) / blockSize;
+    int blockSize = 256;  // 固定线程块大小
+    int gridSize = (n + blockSize - 1) / blockSize;
+    if (kernel == reduce_with_idle_used || kernel == reduce_with_expand_last_dim) {
+        gridSize = (n + blockSize * 2 - 1) / (blockSize * 2);
+    }
     const int output_size = gridSize * sizeof(float);
 
     CHECK_CUDA(cudaMalloc(&d_input, n * sizeof(float)));
@@ -95,16 +157,19 @@ void reduce(ReduceKernel kernel, const float *input, float *output, int n) {
     // Step 3: 多级归约
     int s = gridSize;
     while (s > 1) {
-        int threads = min(blockSize, s);
-        int blocks = (s + threads - 1) / threads;
+        blockSize = min(blockSize, s);
+        gridSize = (s + blockSize - 1) / blockSize;
+        if (kernel == reduce_with_idle_used || kernel == reduce_with_expand_last_dim) {
+            gridSize = (s + blockSize * 2 - 1) / (blockSize * 2);
+        }
 
         // 归约：将 d_current 的结果写入 d_next
-        kernel<<<blocks, threads>>>(d_current, d_next, s);  // 调用传入的核函数
+        kernel<<<gridSize, blockSize>>>(d_current, d_next, s);  // 调用传入的核函数
         CHECK_CUDA(cudaGetLastError());
 
         // 更新状态：将 d_next 的内容作为下一次归约的输入
         std::swap(d_current, d_next);  // 确保逻辑清晰
-        s = blocks;
+        s = gridSize;
     }
 
     // Step 4: 拷贝最终结果到主机
@@ -158,7 +223,10 @@ void test_accuracy_only(ReduceKernel kernel, int N) {
 // ----------- 性能测试相关 -------------
 void benchmark_only(ReduceKernel kernel, int N, int repeat = 1) {
     const int blockSize = 256;
-    const int gridSize = (N + blockSize - 1) / blockSize;
+    int gridSize = (N + blockSize - 1) / blockSize;
+    if (kernel == reduce_with_idle_used || kernel == reduce_with_expand_last_dim) {
+        gridSize = (N + blockSize * 2 - 1) / (blockSize * 2);
+    }
 
     std::vector<float> input(N);
     initialize_array_random(input.data(), N, 0.0f, 1.0f);
@@ -200,7 +268,9 @@ void reduce_accuracy_tests() {
     TestConfig tests[] = {
         {reduce_baseline, "REDUCE baseline"},
         {reduce_without_warp_divergence, "REDUCE without warp divergence"},
-        {reduce_without_bank_conflict, "REDUCE without bank conflict"}
+        {reduce_without_bank_conflict, "REDUCE without bank conflict"},
+	    {reduce_with_idle_used, "REDUCE with idle used"},
+        {reduce_with_expand_last_dim, "REDUCE with expand last dim"},
     };
 
     for (const auto& test : tests) {
@@ -219,7 +289,9 @@ void reduce_benchmark_tests() {
     TestConfig tests[] = {
         {reduce_baseline, "REDUCE baseline"},
         {reduce_without_warp_divergence, "REDUCE without warp divergence"},
-        {reduce_without_bank_conflict, "REDUCE without bank conflict"}
+        {reduce_without_bank_conflict, "REDUCE without bank conflict"},
+	    {reduce_with_idle_used, "REDUCE with idle used"},
+        {reduce_with_expand_last_dim, "REDUCE with expand last dim"},
     };
 
     for (const auto& test : tests) {
