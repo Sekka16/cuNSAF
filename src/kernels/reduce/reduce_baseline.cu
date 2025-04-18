@@ -2,6 +2,7 @@
 #include "kernels/kernels.h"
 
 #define THREAD_PER_BLOCK 256
+#define WARP_SIZE 32
 
 __global__ void reduce_baseline(const float *input, float *output, int n) {
   __shared__ float sdata[THREAD_PER_BLOCK];
@@ -124,6 +125,51 @@ __global__ void reduce_with_expand_last_dim(const float *input, float *output, i
     }
 }
 
+template <unsigned int blockSize>
+__device__ __forceinline__ float warpReduceSum(float sum) {
+    if (blockSize >= 32) sum += __shfl_down_sync(0xffffffff, sum, 16);
+    if (blockSize >= 16) sum += __shfl_down_sync(0xffffffff, sum, 8);
+    if (blockSize >= 8) sum += __shfl_down_sync(0xffffffff, sum, 4);
+    if (blockSize >= 4) sum += __shfl_down_sync(0xffffffff, sum, 2);
+    if (blockSize >= 2) sum += __shfl_down_sync(0xffffffff, sum, 1);
+    return sum;
+}
+
+template <unsigned int blockSize>
+__global__ void reduce_with_shuffle(const float *input, float *output, int n) {
+    float sum = 0.0f;
+
+    int tid = threadIdx.x;
+    int idx = blockIdx.x * (blockDim.x * 2) + threadIdx.x;
+    float x = (idx < n) ? input[idx] : 0.0f;
+    float y = (idx + blockDim.x < n) ? input[idx + blockDim.x] : 0.0f;
+    sum = x + y;
+    __syncthreads();
+
+    static __shared__ float warpLevelSums[WARP_SIZE];
+    const int laneId = threadIdx.x % WARP_SIZE;
+    const int warpId = threadIdx.x / WARP_SIZE;
+
+    sum = warpReduceSum<blockSize>(sum);
+
+    if (laneId == 0) {
+        warpLevelSums[warpId] = sum;
+    }
+    __syncthreads();
+
+    sum = (threadIdx.x < blockDim.x / WARP_SIZE) ? warpLevelSums[laneId] : 0;
+    
+    if (warpId == 0) {
+        sum = warpReduceSum<blockSize/WARP_SIZE>(sum);
+    }
+
+    if (tid == 0) {
+        output[blockIdx.x] = sum;
+    }
+}
+
+template __global__ void reduce_with_shuffle<256>(float*, float*, unsigned int);
+
 void reduce(ReduceKernel kernel, const float *input, float *output, int n) {
     // Step 1: 分配设备内存并拷贝输入数据
     float *d_input = nullptr, *d_current = nullptr, *d_next = nullptr;
@@ -131,7 +177,8 @@ void reduce(ReduceKernel kernel, const float *input, float *output, int n) {
     int blockSize = 256;  // 固定线程块大小
     int gridSize = (n + blockSize - 1) / blockSize;
     if (kernel == reduce_with_idle_used ||
-        kernel == reduce_with_expand_last_dim) {
+        kernel == reduce_with_expand_last_dim ||
+        kernel == reduce_with_shuffle<256>) {
         gridSize = (n + blockSize * 2 - 1) / (blockSize * 2);
     }
     const int output_size = gridSize * sizeof(float);
@@ -161,7 +208,8 @@ void reduce(ReduceKernel kernel, const float *input, float *output, int n) {
         blockSize = min(blockSize, s);
         gridSize = (s + blockSize - 1) / blockSize;
         if (kernel == reduce_with_idle_used ||
-            kernel == reduce_with_expand_last_dim) {
+            kernel == reduce_with_expand_last_dim ||
+            kernel == reduce_with_shuffle<256>) {
             gridSize = (s + blockSize * 2 - 1) / (blockSize * 2);
         }
 
@@ -277,6 +325,7 @@ void reduce_accuracy_tests() {
         {reduce_without_bank_conflict, "REDUCE without bank conflict"},
 	    {reduce_with_idle_used, "REDUCE with idle used"},
         {reduce_with_expand_last_dim, "REDUCE with expand last dim"},
+        {reduce_with_shuffle<256>, "REDUCE with shuffle"},
     };
 
     for (const auto& test : tests) {
@@ -298,6 +347,7 @@ void reduce_benchmark_tests() {
         {reduce_without_bank_conflict, "REDUCE without bank conflict"},
 	    {reduce_with_idle_used, "REDUCE with idle used"},
         {reduce_with_expand_last_dim, "REDUCE with expand last dim"},
+        {reduce_with_shuffle<256>, "REDUCE with shuffle"},
     };
 
     for (const auto& test : tests) {
